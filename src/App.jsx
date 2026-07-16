@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect } from "react";
 import {
   LayoutDashboard,
   Package,
@@ -11,13 +11,14 @@ import {
   RotateCcw,
   Building2,
   Users,
-  X,
   Check,
   ChevronDown,
   ChevronUp,
   Link2,
 } from "lucide-react";
 import ical from 'ical';
+import { doc, getDoc, setDoc, onSnapshot } from 'firebase/firestore';
+import { db } from './firebase';
 
 // ---------- Catalog ----------
 const CATEGORIES = [
@@ -64,40 +65,40 @@ function makeDefaultState() {
       id: "obj1",
       name: "Крутой переулок, 12",
       rcId: "RC-10432",
-  allocated: {
-    towel_medium: 3,
-    towel_small: 2,
-    towel_large: 2,
-    towel_kitchen: 1,
-    towel_feet: 1,
-    sheet_fitted: 1,
-    sheet_double: 1,
-    sheet_euro: 1,
-    duvet_1_5: 1,
-    duvet_double: 1,
-    pillowcase: 3,
-  },
-  bookings: [],
-},
+      allocated: {
+        towel_medium: 3,
+        towel_small: 2,
+        towel_large: 2,
+        towel_kitchen: 1,
+        towel_feet: 1,
+        sheet_fitted: 1,
+        sheet_double: 1,
+        sheet_euro: 1,
+        duvet_1_5: 1,
+        duvet_double: 1,
+        pillowcase: 3,
+      },
+      bookings: [],
+    },
     {
       id: "obj2",
       name: "Московское шоссе, 27А",
       rcId: "RC-10433",
-  allocated: {
-    towel_medium: 3,
-    towel_small: 2,
-    towel_large: 2,
-    towel_kitchen: 1,
-    towel_feet: 1,
-    sheet_fitted: 1,
-    sheet_double: 1,
-    sheet_euro: 1,
-    duvet_1_5: 1,
-    duvet_double: 1,
-    pillowcase: 3,
-  },
-  bookings: [],
-  },
+      allocated: {
+        towel_medium: 3,
+        towel_small: 2,
+        towel_large: 2,
+        towel_kitchen: 1,
+        towel_feet: 1,
+        sheet_fitted: 1,
+        sheet_double: 1,
+        sheet_euro: 1,
+        duvet_1_5: 1,
+        duvet_double: 1,
+        pillowcase: 3,
+      },
+      bookings: [],
+    },
   ];
 
   const stock = {
@@ -117,7 +118,6 @@ function makeDefaultState() {
   return { objects, stock, laundry: [] };
 }
 
-
 function sumItems(...maps) {
   const out = {};
   for (const m of maps) {
@@ -125,15 +125,12 @@ function sumItems(...maps) {
   }
   return out;
 }
+
 // ---------- Расчет комплекта белья на бронь ----------
 function getLinenSet(objId, guests) {
-  // Базовое количество гостей для каждого объекта
   const baseGuests = objId === 'obj1' ? 2 : 4;
-  
-  // Базовый комплект для каждого объекта
   let baseSet;
   if (objId === 'obj1') {
-    // Крутой переулок, 12
     baseSet = {
       towel_medium: 2,
       towel_small: 2,
@@ -147,8 +144,7 @@ function getLinenSet(objId, guests) {
       duvet_double: 1,
       pillowcase: 2,
     };
-  } else { // obj2 - Московское шоссе, 27А
-    // Здесь можно настроить свой комплект, например:
+  } else {
     baseSet = {
       towel_medium: 4,
       towel_small: 4,
@@ -163,16 +159,12 @@ function getLinenSet(objId, guests) {
       pillowcase: 4,
     };
   }
-
-  // Дополнительные предметы на каждого дополнительного гостя (сверх базового числа)
   const extraPerGuest = {
     towel_medium: 1,
     towel_small: 1,
     towel_large: 1,
     duvet_1_5: 1,
-    // Остальные типы (кухня, ножки, евро, fitted, duvet_double, pillowcase) не добавляются
   };
-
   const result = { ...baseSet };
   const extraGuests = Math.max(0, guests - baseGuests);
   for (const key in extraPerGuest) {
@@ -188,17 +180,14 @@ function getLinenSet(objId, guests) {
 async function loadBookingsFromICal(icalUrl, objId, defaultGuests = 1) {
   try {
     let text;
-    // Если мы на localhost – грузим напрямую
     if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
       const response = await fetch(icalUrl);
       text = await response.text();
     } else {
-      // Иначе – через собственный прокси на Netlify
       const proxyUrl = `/.netlify/functions/iCalProxy?url=${encodeURIComponent(icalUrl)}`;
       const response = await fetch(proxyUrl);
       text = await response.text();
     }
-
     const data = ical.parseICS(text);
     const bookings = [];
     for (const key in data) {
@@ -207,7 +196,6 @@ async function loadBookingsFromICal(icalUrl, objId, defaultGuests = 1) {
         const summary = event.summary || '';
         const match = summary.match(/RC\((\d+)\)/);
         const id = match ? match[1] : `ical_${key}`;
-        
         bookings.push({
           id: `ical_${id}`,
           guest: `Бронь ${id}`,
@@ -215,7 +203,7 @@ async function loadBookingsFromICal(icalUrl, objId, defaultGuests = 1) {
           checkIn: new Date(event.start),
           checkOut: new Date(event.end),
           rc: `RC-${id}`,
-          items: getLinenSet(objId, defaultGuests)   // <-- вот эта строка добавлена
+          items: getLinenSet(objId, defaultGuests),
         });
       }
     }
@@ -226,74 +214,114 @@ async function loadBookingsFromICal(icalUrl, objId, defaultGuests = 1) {
     return [];
   }
 }
-// ---------- Persistence ----------
-const STORAGE_KEY = "linen-tracker-state-v1";
 
+// ---------- Firebase helpers ----------
+const DOC_PATH = 'appData/main';
+
+async function saveStateToFirebase(state) {
+  try {
+    const docRef = doc(db, 'appData', 'main');
+    await setDoc(docRef, state);
+  } catch (e) {
+    console.error('Ошибка сохранения в Firebase:', e);
+  }
+}
+
+// ---------- Main App ----------
 export default function App() {
   const [state, setState] = useState(null);
   const [loaded, setLoaded] = useState(false);
-  const [tab, setTab] = useState("dashboard");
-  const [objFilter, setObjFilter] = useState("obj1");
+  const [tab, setTab] = useState('dashboard');
+  const [objFilter, setObjFilter] = useState('obj1');
 
   useEffect(() => {
-  (async () => {
-    try {
-      const stored = localStorage.getItem(STORAGE_KEY);
-      if (stored) {
-        const parsed = JSON.parse(stored);
-        // восстанавливаем даты
-        parsed.objects.forEach((o) =>
-          o.bookings.forEach((b) => {
-            b.checkIn = new Date(b.checkIn);
-            b.checkOut = new Date(b.checkOut);
-          })
-        );
-        parsed.laundry.forEach((l) => (l.checkOut = new Date(l.checkOut)));
-        setState(parsed);
-      } else {
-        // Первый запуск – загружаем из iCal
-        const defaultState = makeDefaultState();
-        
-        const icalBookings1 = await loadBookingsFromICal(
-          'https://realtycalendar.ru/apartments/export.ics?q=MTk5ODIz%0A',
-         'obj1',
-          2
-        );
-        const icalBookings2 = await loadBookingsFromICal(
-          'https://realtycalendar.ru/apartments/export.ics?q=MjY2ODg3%0A',
-         'obj2',
-          4
-        );
-        
-        const updatedObjects = defaultState.objects.map((obj) => {
-          if (obj.name === 'Крутой переулок, 12') {
-            return { ...obj, bookings: icalBookings1 };
-          }
-          if (obj.name === 'Московское шоссе, 27А') {
-            return { ...obj, bookings: icalBookings2 };
-          }
-          return obj;
-        });
-        
-        setState({ ...defaultState, objects: updatedObjects });
+    const docRef = doc(db, 'appData', 'main');
+
+    const initData = async () => {
+      try {
+        const snap = await getDoc(docRef);
+        if (snap.exists()) {
+          const data = snap.data();
+          // Восстанавливаем даты
+          data.objects.forEach((o) =>
+            o.bookings.forEach((b) => {
+              b.checkIn = new Date(b.checkIn);
+              b.checkOut = new Date(b.checkOut);
+            })
+          );
+          data.laundry.forEach((l) => (l.checkOut = new Date(l.checkOut)));
+          setState(data);
+          setLoaded(true);
+        } else {
+          // Первый запуск – загружаем iCal
+          const defaultState = makeDefaultState();
+          const icalBookings1 = await loadBookingsFromICal(
+            'https://realtycalendar.ru/apartments/export.ics?q=MTk5ODIz%0A',
+            'obj1',
+            2
+          );
+          const icalBookings2 = await loadBookingsFromICal(
+            'https://realtycalendar.ru/apartments/export.ics?q=MjY2ODg3%0A',
+            'obj2',
+            4
+          );
+          const updatedObjects = defaultState.objects.map((obj) => {
+            if (obj.name === 'Крутой переулок, 12') {
+              return { ...obj, bookings: icalBookings1 };
+            }
+            if (obj.name === 'Московское шоссе, 27А') {
+              return { ...obj, bookings: icalBookings2 };
+            }
+            return obj;
+          });
+          const newState = { ...defaultState, objects: updatedObjects };
+          await saveStateToFirebase(newState);
+          setState(newState);
+          setLoaded(true);
+        }
+      } catch (e) {
+        console.error('Ошибка инициализации:', e);
+        setState(makeDefaultState());
+        setLoaded(true);
       }
-    } catch (e) {
-      console.error('Ошибка инициализации:', e);
-      setState(makeDefaultState());
-    } finally {
-      setLoaded(true);
-    }
-  })();
-}, []);
+    };
 
-  useEffect(() => {
-    if (!loaded || !state) return;
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-  } catch (e) {}
-}, [state, loaded]);
+    // Подписка на реальные обновления
+    const unsubscribe = onSnapshot(
+      docRef,
+      (snap) => {
+        if (snap.exists()) {
+          const data = snap.data();
+          data.objects.forEach((o) =>
+            o.bookings.forEach((b) => {
+              b.checkIn = new Date(b.checkIn);
+              b.checkOut = new Date(b.checkOut);
+            })
+          );
+          data.laundry.forEach((l) => (l.checkOut = new Date(l.checkOut)));
+          setState(data);
+          setLoaded(true);
+        }
+      },
+      (error) => console.error('Ошибка подписки:', error)
+    );
 
-  // auto-generate laundry entries for bookings whose checkout has passed
+    initData();
+    return () => unsubscribe();
+  }, []);
+
+  // Функция обновления состояния с сохранением в Firebase
+  const updateState = async (newStateOrUpdater) => {
+    setState((prev) => {
+      const newState = typeof newStateOrUpdater === 'function'
+        ? newStateOrUpdater(prev)
+        : newStateOrUpdater;
+      saveStateToFirebase(newState);
+      return newState;
+    });
+  };
+
+  // Автоматическое добавление в стирку
   useEffect(() => {
     if (!state) return;
     const existingIds = new Set(state.laundry.map((l) => l.bookingId));
@@ -302,30 +330,26 @@ export default function App() {
       for (const b of obj.bookings) {
         if (b.checkOut <= today && !existingIds.has(b.id)) {
           newEntries.push({
-            id: "l_" + b.id,
+            id: 'l_' + b.id,
             bookingId: b.id,
             objectId: obj.id,
             objectName: obj.name,
             guest: b.guest,
             checkOut: b.checkOut,
             items: b.items || getLinenSet(obj.id, b.guests),
-            status: "in_laundry",
+            status: 'in_laundry',
           });
         }
       }
     }
     if (newEntries.length) {
-      setState((s) => ({ ...s, laundry: [...s.laundry, ...newEntries] }));
+      updateState((s) => ({ ...s, laundry: [...s.laundry, ...newEntries] }));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state?.objects?.length, loaded]);
 
   if (!state) {
-    return (
-      <div style={{ padding: 40, fontFamily: "'Onest', sans-serif", color: "#8E8B84" }}>
-        Загрузка…
-      </div>
-    );
+    return <div style={{ padding: 40, fontFamily: "'Onest', sans-serif", color: "#8E8B84" }}>Загрузка…</div>;
   }
 
   return (
@@ -333,18 +357,32 @@ export default function App() {
       <style>{CSS}</style>
       <Sidebar tab={tab} setTab={setTab} />
       <main className="lt-main">
-        {tab === "dashboard" && (
-          <DashboardTab state={state} setState={setState} objFilter={objFilter} setObjFilter={setObjFilter} />
+        {tab === 'dashboard' && (
+          <DashboardTab
+            state={state}
+            setState={updateState}
+            objFilter={objFilter}
+            setObjFilter={setObjFilter}
+          />
         )}
-        {tab === "warehouse" && <WarehouseTab state={state} setState={setState} />}
-        {tab === "bookings" && <BookingsTab state={state} setState={setState} objFilter={objFilter} setObjFilter={setObjFilter} />}
-        {tab === "laundry" && <LaundryTab state={state} setState={setState} />}
+        {tab === 'warehouse' && <WarehouseTab state={state} setState={updateState} />}
+        {tab === 'bookings' && (
+          <BookingsTab
+            state={state}
+            setState={updateState}
+            objFilter={objFilter}
+            setObjFilter={setObjFilter}
+          />
+        )}
+        {tab === 'laundry' && <LaundryTab state={state} setState={updateState} />}
       </main>
     </div>
   );
 }
 
-// ---------- Sidebar ----------
+// ============== Все компоненты из вашего старого файла ==============
+
+// ----- Sidebar -----
 function Sidebar({ tab, setTab }) {
   const items = [
     { key: "dashboard", label: "Дефицит", icon: LayoutDashboard },
@@ -375,15 +413,41 @@ function Sidebar({ tab, setTab }) {
       </div>
       <div className="lt-sidebar-foot">
         <Link2 size={13} strokeWidth={1.8} />
-       <span>Данные из RealtyCalendar (iCal) с ручным вводом гостей.</span>
+        <span>Данные из RealtyCalendar (iCal) с ручным вводом гостей.</span>
       </div>
     </nav>
   );
 }
 
-// ---------- Dashboard ----------
+// ----- DashboardTab -----
 function DashboardTab({ state, setState, objFilter, setObjFilter }) {
-  // Функция для изменения выделенного белья на объекте
+  const [selectedBooking, setSelectedBooking] = useState(null);
+  const [isModalOpen, setIsModalOpen] = useState(false);
+
+  const openModal = (objId, booking) => {
+    setSelectedBooking({ ...booking, objectId: objId });
+    setIsModalOpen(true);
+  };
+  const closeModal = () => {
+    setIsModalOpen(false);
+    setSelectedBooking(null);
+  };
+  const updateBookingItems = (objId, bookingId, newItems) => {
+    setState((prev) => ({
+      ...prev,
+      objects: prev.objects.map((obj) =>
+        obj.id === objId
+          ? {
+              ...obj,
+              bookings: obj.bookings.map((b) =>
+                b.id === bookingId ? { ...b, items: newItems } : b
+              ),
+            }
+          : obj
+      ),
+    }));
+  };
+
   const updateAllocated = (objId, key, delta) => {
     setState((prev) => {
       const obj = prev.objects.find(o => o.id === objId);
@@ -404,33 +468,7 @@ function DashboardTab({ state, setState, objFilter, setObjFilter }) {
       };
     });
   };
-  const [selectedBooking, setSelectedBooking] = useState(null);
-  const [isModalOpen, setIsModalOpen] = useState(false);
-  const openModal = (objId, booking) => {
-    setSelectedBooking({ ...booking, objectId: objId });
-    setIsModalOpen(true);
-  };
-  const closeModal = () => {
-    setIsModalOpen(false);
-    setSelectedBooking(null);
-  };
-  const updateBookingItems = (objId, bookingId, newItems) => {
-    setState((prev) => ({
-     ...prev,
-      objects: prev.objects.map((obj) =>
-        obj.id === objId
-          ? {
-             ...obj,
-              bookings: obj.bookings.map((b) =>
-                b.id === bookingId ? { ...b, items: newItems } : b
-              ),
-            }
-          : obj
-      ),
-    }));
-  };
 
-  // Для каждого объекта считаем потребность на 2 ближайшие будущие брони
   const perObjectNeed = state.objects.map((obj) => {
     const upcoming = obj.bookings
       .filter((b) => b.checkIn >= today)
@@ -440,12 +478,10 @@ function DashboardTab({ state, setState, objFilter, setObjFilter }) {
     return { obj, upcoming, need };
   });
 
-  // Фильтруем по objFilter
   const filtered = perObjectNeed.filter(
     (p) => objFilter === "all" || p.obj.id === objFilter
   );
 
-  // Проверяем, есть ли дефицит хотя бы по одной позиции для любого из отфильтрованных объектов
   let hasShortage = false;
   for (const p of filtered) {
     for (const t of LINEN_TYPES) {
@@ -496,7 +532,6 @@ function DashboardTab({ state, setState, objFilter, setObjFilter }) {
         )}
       </div>
 
-      {/* Карточки с ближайшими бронями */}
       <div className="lt-objcards">
         {filtered.map(({ obj, upcoming }) => (
           <div className="lt-card" key={obj.id}>
@@ -510,7 +545,12 @@ function DashboardTab({ state, setState, objFilter, setObjFilter }) {
                 <div className="lt-empty-small">Будущих броней нет</div>
               )}
               {upcoming.map((b) => (
-                <div className="lt-tl-item" key={b.id}onClick={() => openModal(obj.id, b)} style={{ cursor: 'pointer' }}>
+                <div
+                  className="lt-tl-item"
+                  key={b.id}
+                  onClick={() => openModal(obj.id, b)}
+                  style={{ cursor: 'pointer' }}
+                >
                   <div className="lt-tl-dates">
                     {fmt(b.checkIn)} – {fmt(b.checkOut)}
                   </div>
@@ -525,10 +565,8 @@ function DashboardTab({ state, setState, objFilter, setObjFilter }) {
         ))}
       </div>
 
-      {/* Таблицы дефицита по объектам */}
       <div className="lt-tablewrap">
         {filtered.map(({ obj, need }) => {
-          // Показываем только категории, где есть потребность или allocated
           const categoriesWithData = CATEGORIES.filter((cat) => {
             const types = LINEN_TYPES.filter((t) => t.cat === cat.key);
             return types.some(
@@ -603,19 +641,20 @@ function DashboardTab({ state, setState, objFilter, setObjFilter }) {
           );
         })}
       </div>
+
       {isModalOpen && selectedBooking && (
         <EditBookingModal
-        booking={selectedBooking}
-        objectId={selectedBooking.objectId}
-        onClose={closeModal}
-        onUpdate={updateBookingItems}
+          booking={selectedBooking}
+          objectId={selectedBooking.objectId}
+          onClose={closeModal}
+          onUpdate={updateBookingItems}
         />
-     )}
+      )}
     </div>
   );
 }
 
-// ---------- Warehouse ----------
+// ----- WarehouseTab -----
 function WarehouseTab({ state, setState }) {
   const setQty = (key, val) => {
     const v = Math.max(0, Math.round(val));
@@ -661,72 +700,66 @@ function WarehouseTab({ state, setState }) {
   );
 }
 
-// ---------- Bookings ----------
+// ----- BookingsTab -----
 function BookingsTab({ state, setState, objFilter, setObjFilter }) {
-  // Состояния для раскрытия списков (история и скрытые будущие)
   const [expanded, setExpanded] = useState({});
   const [selectedBooking, setSelectedBooking] = useState(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
 
-  // Функция для изменения количества гостей у конкретной брони
   const updateGuests = (objId, bookingId, newGuests) => {
-  const guests = Math.max(1, parseInt(newGuests) || 1);
-  // Пересчитываем комплект для этой брони
-  const newItems = getLinenSet(objId, guests);
-  setState((prev) => ({
-    ...prev,
-    objects: prev.objects.map((obj) =>
-      obj.id === objId
-        ? {
-            ...obj,
-            bookings: obj.bookings.map((b) =>
-              b.id === bookingId ? { ...b, guests, items: newItems } : b
-            ),
-          }
-        : obj
-    ),
-  }));
-};
+    const guests = Math.max(1, parseInt(newGuests) || 1);
+    const newItems = getLinenSet(objId, guests);
+    setState((prev) => ({
+      ...prev,
+      objects: prev.objects.map((obj) =>
+        obj.id === objId
+          ? {
+              ...obj,
+              bookings: obj.bookings.map((b) =>
+                b.id === bookingId ? { ...b, guests, items: newItems } : b
+              ),
+            }
+          : obj
+      ),
+    }));
+  };
 
-  // Переключение раскрытия для конкретного объекта и типа (history / future)
   const toggleExpand = (objId, type) => {
     setExpanded((prev) => ({
       ...prev,
       [`${objId}-${type}`]: !prev[`${objId}-${type}`],
     }));
   };
+
   const openModal = (objId, booking) => {
-  setSelectedBooking({ ...booking, objectId: objId });
-  setIsModalOpen(true);
-};
-
-const closeModal = () => {
-  setIsModalOpen(false);
-  setSelectedBooking(null);
-};
-
-const handleItemChange = (key, value) => {
-  if (!selectedBooking) return;
-  const newItems = { ...selectedBooking.items, [key]: Math.max(0, Number(value) || 0) };
-  // Обновляем состояние
-  setState((prev) => ({
-    ...prev,
-    objects: prev.objects.map((obj) =>
-      obj.id === selectedBooking.objectId
-        ? {
-            ...obj,
-            bookings: obj.bookings.map((b) =>
-              b.id === selectedBooking.id ? { ...b, items: newItems } : b
-            ),
-          }
-        : obj
-    ),
-  }));
-  // Обновляем локальный selectedBooking
-  setSelectedBooking({ ...selectedBooking, items: newItems });
+    setSelectedBooking({ ...booking, objectId: objId });
+    setIsModalOpen(true);
   };
 
-  // Фильтруем объекты по выбранному (objFilter)
+  const closeModal = () => {
+    setIsModalOpen(false);
+    setSelectedBooking(null);
+  };
+
+  const handleItemChange = (key, value) => {
+    if (!selectedBooking) return;
+    const newItems = { ...selectedBooking.items, [key]: Math.max(0, Number(value) || 0) };
+    setState((prev) => ({
+      ...prev,
+      objects: prev.objects.map((obj) =>
+        obj.id === selectedBooking.objectId
+          ? {
+              ...obj,
+              bookings: obj.bookings.map((b) =>
+                b.id === selectedBooking.id ? { ...b, items: newItems } : b
+              ),
+            }
+          : obj
+      ),
+    }));
+    setSelectedBooking({ ...selectedBooking, items: newItems });
+  };
+
   const filteredObjects = state.objects.filter(
     (obj) => objFilter === obj.id
   );
@@ -755,12 +788,9 @@ const handleItemChange = (key, value) => {
       </header>
 
       {filteredObjects.map((obj) => {
-        // Сортируем все брони по дате заезда
         const sorted = [...obj.bookings].sort((a, b) => a.checkIn - b.checkIn);
-        // Разделяем на прошлые и будущие
         const past = sorted.filter((b) => b.checkOut < today);
         const future = sorted.filter((b) => b.checkIn >= today);
-        // Из будущих берём первые 4
         const visibleFuture = future.slice(0, 4);
         const hiddenFuture = future.slice(4);
 
@@ -770,7 +800,6 @@ const handleItemChange = (key, value) => {
               {obj.name} <span className="lt-tag-id">{obj.rcId}</span>
             </div>
 
-            {/* Таблица с видимыми будущими бронями (первые 4) */}
             {visibleFuture.length > 0 && (
               <table className="lt-table">
                 <thead>
@@ -809,13 +838,11 @@ const handleItemChange = (key, value) => {
               </table>
             )}
 
-            {/* Кнопка "Показать остальные будущие" (если есть скрытые) */}
             {hiddenFuture.length > 0 && (
               <div style={{ marginTop: '8px', marginBottom: '12px' }}>
                 <button
                   className="lt-history-toggle"
                   onClick={() => toggleExpand(obj.id, 'future')}
-                  onClick={(e) => e.stopPropagation()}
                 >
                   {expanded[`${obj.id}-future`] ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
                   {expanded[`${obj.id}-future`] ? 'Скрыть' : 'Показать'} остальные будущие брони ({hiddenFuture.length})
@@ -845,6 +872,7 @@ const handleItemChange = (key, value) => {
                               className="mono lt-guest-input"
                               value={b.guests}
                               onChange={(e) => updateGuests(obj.id, b.id, e.target.value)}
+                              onClick={(e) => e.stopPropagation()}
                             />
                           </td>
                           <td>
@@ -859,13 +887,11 @@ const handleItemChange = (key, value) => {
               </div>
             )}
 
-            {/* Кнопка "Показать историю" для завершённых броней */}
             {past.length > 0 && (
               <div style={{ marginTop: '12px' }}>
                 <button
                   className="lt-history-toggle"
                   onClick={() => toggleExpand(obj.id, 'history')}
-                  onClick={(e) => e.stopPropagation()}
                 >
                   {expanded[`${obj.id}-history`] ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
                   История завершённых броней ({past.length})
@@ -895,6 +921,7 @@ const handleItemChange = (key, value) => {
                               className="mono lt-guest-input"
                               value={b.guests}
                               onChange={(e) => updateGuests(obj.id, b.id, e.target.value)}
+                              onClick={(e) => e.stopPropagation()}
                             />
                           </td>
                           <td>
@@ -909,58 +936,59 @@ const handleItemChange = (key, value) => {
               </div>
             )}
 
-            {/* Если нет ни одной брони */}
             {sorted.length === 0 && (
               <div className="lt-empty">Нет бронирований для этого объекта</div>
             )}
           </div>
         );
       })}
+
       {isModalOpen && selectedBooking && (
-  <div className="lt-modal-overlay" onClick={closeModal}>
-    <div className="lt-modal" onClick={(e) => e.stopPropagation()}>
-      <div className="lt-modal-header">
-        <h3>Редактирование комплекта белья</h3>
-        <button onClick={closeModal} className="lt-modal-close">×</button>
-      </div>
-      <div className="lt-modal-body">
-        <p><strong>Бронь:</strong> {selectedBooking.guest}</p>
-        <p><strong>Гостей:</strong> {selectedBooking.guests}</p>
-        <table className="lt-table">
-          <thead>
-            <tr>
-              <th>Тип</th>
-              <th>Количество</th>
-            </tr>
-          </thead>
-          <tbody>
-            {LINEN_TYPES.map((t) => (
-              <tr key={t.key}>
-                <td>{t.name}</td>
-                <td>
-                  <input
-                    type="number"
-                    min="0"
-                    className="mono lt-guest-input"
-                    value={selectedBooking.items?.[t.key] || 0}
-                    onChange={(e) => handleItemChange(t.key, e.target.value)}
-                  />
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-      <div className="lt-modal-footer">
-        <button onClick={closeModal} className="lt-btn-primary">Готово</button>
-      </div>
-    </div>
-  </div>
-)}
+        <div className="lt-modal-overlay" onClick={closeModal}>
+          <div className="lt-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="lt-modal-header">
+              <h3>Редактирование комплекта белья</h3>
+              <button onClick={closeModal} className="lt-modal-close">×</button>
+            </div>
+            <div className="lt-modal-body">
+              <p><strong>Бронь:</strong> {selectedBooking.guest}</p>
+              <p><strong>Гостей:</strong> {selectedBooking.guests}</p>
+              <table className="lt-table">
+                <thead>
+                  <tr>
+                    <th>Тип</th>
+                    <th>Количество</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {LINEN_TYPES.map((t) => (
+                    <tr key={t.key}>
+                      <td>{t.name}</td>
+                      <td>
+                        <input
+                          type="number"
+                          min="0"
+                          className="mono lt-guest-input"
+                          value={selectedBooking.items?.[t.key] || 0}
+                          onChange={(e) => handleItemChange(t.key, e.target.value)}
+                        />
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="lt-modal-footer">
+              <button onClick={closeModal} className="lt-btn-primary">Готово</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
-// ---------- Laundry ----------
+
+// ----- LaundryTab -----
 function LaundryTab({ state, setState }) {
   const [historyOpen, setHistoryOpen] = useState(false);
   const active = state.laundry.filter((l) => l.status === "in_laundry");
@@ -1100,6 +1128,7 @@ function LaundryTab({ state, setState }) {
   );
 }
 
+// ----- AddItemPicker -----
 function AddItemPicker({ onAdd, exclude }) {
   const [open, setOpen] = useState(false);
   const options = LINEN_TYPES.filter((t) => !(exclude && exclude[t.key]));
@@ -1132,7 +1161,8 @@ function AddItemPicker({ onAdd, exclude }) {
     </select>
   );
 }
-// ---------- Modal для редактирования комплекта ----------
+
+// ----- EditBookingModal -----
 function EditBookingModal({ booking, objectId, onClose, onUpdate }) {
   const [items, setItems] = useState(booking.items || {});
   const handleChange = (key, value) => {
@@ -1186,7 +1216,8 @@ function EditBookingModal({ booking, objectId, onClose, onUpdate }) {
     </div>
   );
 }
-// ---------- Styles ----------
+
+// ---------- CSS ----------
 const CSS = `
 @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=Work+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap');
 
@@ -1250,7 +1281,7 @@ const CSS = `
   display: flex; align-items: center; gap: 10px;
   padding: 9px 10px; border-radius: 6px; border: none;
   background: transparent; color: var(--ink-soft);
-  font-family: 'Onest', sans-serif; font-size: 14px; /* увеличено для единообразия */
+  font-family: 'Onest', sans-serif; font-size: 14px;
   font-weight: 500;
   cursor: pointer; text-align: left;
 }
@@ -1270,7 +1301,7 @@ const CSS = `
 .lt-sub { color: var(--ink-soft); font-size: 13px; margin: 0; max-width: 520px; line-height: 1.55; }
 
 .lt-objfilter { display: flex; gap: 4px; background: var(--paper); border: 1px solid var(--line); box-shadow: var(--shadow); border-radius: 8px; padding: 3px; }
-.lt-objfilter button { border: none; background: transparent; padding: 6px 12px; border-radius: 6px; font-size: 14px; /* увеличено */ font-weight: 500; color: var(--ink-soft); cursor: pointer; font-family: 'Onest', sans-serif; }
+.lt-objfilter button { border: none; background: transparent; padding: 6px 12px; border-radius: 6px; font-size: 14px; font-weight: 500; color: var(--ink-soft); cursor: pointer; font-family: 'Onest', sans-serif; }
 .lt-objfilter button.active { background: #2c3248; color: white; }
 
 .lt-alertbar {
@@ -1286,9 +1317,9 @@ const CSS = `
 .lt-card-head { display: flex; align-items: center; gap: 7px; font-weight: 600; font-size: 14px; padding-bottom: 10px; margin-bottom: 10px; border-bottom: 1px dashed var(--line); }
 .lt-tag-id { margin-left: auto; font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: var(--ink-soft); background: var(--linen); padding: 2px 6px; border-radius: 4px; }
 .lt-timeline { display: flex; flex-direction: column; gap: 8px; }
-.lt-tl-item { display: flex; justify-content: space-between; align-items: center; font-size: 13px; /* увеличено */ }
-.lt-tl-dates { font-family: 'IBM Plex Mono', monospace; font-size: 13px; /* увеличено */ }
-.lt-tl-meta { display: flex; align-items: center; gap: 4px; color: var(--ink-soft); font-size: 13px; /* явно задано */ }
+.lt-tl-item { display: flex; justify-content: space-between; align-items: center; font-size: 13px; }
+.lt-tl-dates { font-family: 'IBM Plex Mono', monospace; font-size: 13px; }
+.lt-tl-meta { display: flex; align-items: center; gap: 4px; color: var(--ink-soft); font-size: 13px; }
 .lt-empty-small { color: var(--ink-soft); font-size: 13px; font-style: italic; }
 .lt-empty { color: var(--ink-soft); font-size: 14px; font-style: italic; padding: 16px 0; }
 
@@ -1300,8 +1331,8 @@ const CSS = `
 }
 
 .lt-table { width: 100%; border-collapse: collapse; background: var(--paper); border: 1px solid var(--line); box-shadow: var(--shadow); border-radius: 8px; overflow: hidden; }
-.lt-table th { text-align: left; font-size: 12px; /* увеличено */ text-transform: uppercase; letter-spacing: 0.04em; color: var(--ink-soft); font-weight: 600; padding: 9px 12px; border-bottom: 1px solid var(--line); }
-.lt-table td { padding: 9px 12px; border-bottom: 1px solid var(--line); font-size: 14px; /* увеличено */ }
+.lt-table th { text-align: left; font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--ink-soft); font-weight: 600; padding: 9px 12px; border-bottom: 1px solid var(--line); }
+.lt-table td { padding: 9px 12px; border-bottom: 1px solid var(--line); font-size: 14px; }
 .lt-table tr:last-child td { border-bottom: none; }
 .mono { font-family: 'IBM Plex Mono', monospace; }
 .lt-dim { color: var(--ink-soft); }
@@ -1438,7 +1469,7 @@ const CSS = `
     width: 100%;
     flex-direction: row;
     justify-content: space-around;
-    background: #bdd1dd;
+    background: #e9f4fc;
     border-top: 1px solid var(--line);
     padding: 6px 10px;
     z-index: 100;
@@ -1489,15 +1520,17 @@ const CSS = `
     flex: 1;
     overflow-y: auto;
   }
-    .lt-guest-input {
-  width: 70px !important;
-  height: 36px !important;
-  font-size: 16px !important;
+  .lt-guest-input {
+    width: 70px !important;
+    height: 36px !important;
+    font-size: 16px !important;
   }
   .lt-stepper button {
-  width: 36px !important;
-  height: 36px !important;
-  font-size: 18px !important;
+    width: 36px !important;
+    height: 36px !important;
+    font-size: 18px !important;
   }
 }
 `;
+
+// Экспорт по умолчанию уже есть в App
