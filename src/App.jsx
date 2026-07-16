@@ -343,29 +343,8 @@ export default function App() {
       }
     };
 
-    // Подписка на реальные обновления
-    const unsubscribe = onSnapshot(
-      docRef,
-      (snap) => {
-        if (snap.exists()) {
-          const data = snap.data();
-          data.objects.forEach((o) =>
-            o.bookings.forEach((b) => {
-              b.checkIn = new Date(b.checkIn);
-              b.checkOut = new Date(b.checkOut);
-            })
-          );
-          data.laundry.forEach((l) => (l.checkOut = new Date(l.checkOut)));
-          setState(data);
-          setLoaded(true);
-        }
-      },
-      (error) => console.error('Ошибка подписки:', error)
-    );
-
     initData();
-    return () => unsubscribe();
-  }, []);
+   
 
   // Функция обновления состояния с сохранением в Firebase
   const updateState = async (newStateOrUpdater) => {
@@ -557,10 +536,6 @@ function DashboardTab({ state, setState, objFilter, setObjFilter }) {
       <header className="lt-header">
         <div>
           <h1>Дефицит белья к ближайшим заездам</h1>
-          <p className="lt-sub">
-            Потребность считается по двум ближайшим будущим броням каждого объекта. 
-            Выдавайте бельё со склада на объект кнопками +/– рядом с "На объекте".
-          </p>
         </div>
         <div className="lt-objfilter">
           {state.objects.map((o) => (
@@ -826,10 +801,6 @@ function BookingsTab({ state, setState, objFilter, setObjFilter }) {
       <header className="lt-header">
         <div>
           <h1>Брони</h1>
-          <p className="lt-sub">
-            <Link2 size={13} strokeWidth={2} style={{ verticalAlign: -2, marginRight: 4 }} />
-            Данные загружены из RealtyCalendar (iCal). Количество гостей можно редактировать вручную.
-          </p>
         </div>
         <div className="lt-objfilter">
           {state.objects.map((o) => (
@@ -853,9 +824,6 @@ function BookingsTab({ state, setState, objFilter, setObjFilter }) {
 
         return (
           <div className="lt-section" key={obj.id}>
-            <div className="lt-section-title">
-              {obj.name} <span className="lt-tag-id">{obj.rcId}</span>
-            </div>
 
             {visibleFuture.length > 0 && (
               <table className="lt-table">
