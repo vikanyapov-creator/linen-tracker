@@ -603,17 +603,16 @@ function DashboardTab({ state, setState, objFilter, setObjFilter }) {
           );
         })}
       </div>
+      {isModalOpen && selectedBooking && (
+        <EditBookingModal
+        booking={selectedBooking}
+        objectId={selectedBooking.objectId}
+        onClose={closeModal}
+        onUpdate={updateBookingItems}
+        />
+     )}
     </div>
-    
   );
-  {isModalOpen && selectedBooking && (
-  <EditBookingModal
-    booking={selectedBooking}
-    objectId={selectedBooking.objectId}
-    onClose={closeModal}
-    onUpdate={updateBookingItems}
-  />
-  )}
 }
 
 // ---------- Warehouse ----------
@@ -797,6 +796,7 @@ const handleItemChange = (key, value) => {
                           className="mono lt-guest-input"
                           value={b.guests}
                           onChange={(e) => updateGuests(obj.id, b.id, e.target.value)}
+                          onClick={(e) => e.stopPropagation()}
                         />
                       </td>
                       <td>
@@ -815,6 +815,7 @@ const handleItemChange = (key, value) => {
                 <button
                   className="lt-history-toggle"
                   onClick={() => toggleExpand(obj.id, 'future')}
+                  onClick={(e) => e.stopPropagation()}
                 >
                   {expanded[`${obj.id}-future`] ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
                   {expanded[`${obj.id}-future`] ? 'Скрыть' : 'Показать'} остальные будущие брони ({hiddenFuture.length})
@@ -864,6 +865,7 @@ const handleItemChange = (key, value) => {
                 <button
                   className="lt-history-toggle"
                   onClick={() => toggleExpand(obj.id, 'history')}
+                  onClick={(e) => e.stopPropagation()}
                 >
                   {expanded[`${obj.id}-history`] ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
                   История завершённых броней ({past.length})
@@ -1436,7 +1438,7 @@ const CSS = `
     width: 100%;
     flex-direction: row;
     justify-content: space-around;
-    background: var(--paper);
+    background: #bdd1dd;
     border-top: 1px solid var(--line);
     padding: 6px 10px;
     z-index: 100;
@@ -1486,6 +1488,16 @@ const CSS = `
     padding: 18px 18px 80px 18px;
     flex: 1;
     overflow-y: auto;
+  }
+    .lt-guest-input {
+  width: 70px !important;
+  height: 36px !important;
+  font-size: 16px !important;
+  }
+  .lt-stepper button {
+  width: 36px !important;
+  height: 36px !important;
+  font-size: 18px !important;
   }
 }
 `;
