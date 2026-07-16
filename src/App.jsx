@@ -185,17 +185,20 @@ function getLinenSet(objId, guests) {
 }
 
 // ---------- iCalendar loading ----------
-async function loadBookingsFromICal(icalUrl, defaultGuests = 1) {
+async function loadBookingsFromICal(icalUrl, objId, defaultGuests = 1) {
   try {
     let text;
+    // Если мы на localhost – грузим напрямую
     if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
       const response = await fetch(icalUrl);
       text = await response.text();
     } else {
+      // Иначе – через собственный прокси на Netlify
       const proxyUrl = `/.netlify/functions/iCalProxy?url=${encodeURIComponent(icalUrl)}`;
       const response = await fetch(proxyUrl);
       text = await response.text();
     }
+
     const data = ical.parseICS(text);
     const bookings = [];
     for (const key in data) {
@@ -204,6 +207,7 @@ async function loadBookingsFromICal(icalUrl, defaultGuests = 1) {
         const summary = event.summary || '';
         const match = summary.match(/RC\((\d+)\)/);
         const id = match ? match[1] : `ical_${key}`;
+        
         bookings.push({
           id: `ical_${id}`,
           guest: `Бронь ${id}`,
@@ -211,6 +215,7 @@ async function loadBookingsFromICal(icalUrl, defaultGuests = 1) {
           checkIn: new Date(event.start),
           checkOut: new Date(event.end),
           rc: `RC-${id}`,
+          items: getLinenSet(objId, defaultGuests)   // <-- вот эта строка добавлена
         });
       }
     }
@@ -399,6 +404,31 @@ function DashboardTab({ state, setState, objFilter, setObjFilter }) {
       };
     });
   };
+  const [selectedBooking, setSelectedBooking] = useState(null);
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const openModal = (objId, booking) => {
+    setSelectedBooking({ ...booking, objectId: objId });
+    setIsModalOpen(true);
+  };
+  const closeModal = () => {
+    setIsModalOpen(false);
+    setSelectedBooking(null);
+  };
+  const updateBookingItems = (objId, bookingId, newItems) => {
+    setState((prev) => ({
+     ...prev,
+      objects: prev.objects.map((obj) =>
+        obj.id === objId
+          ? {
+             ...obj,
+              bookings: obj.bookings.map((b) =>
+                b.id === bookingId ? { ...b, items: newItems } : b
+              ),
+            }
+          : obj
+      ),
+    }));
+  };
 
   // Для каждого объекта считаем потребность на 2 ближайшие будущие брони
   const perObjectNeed = state.objects.map((obj) => {
@@ -480,7 +510,7 @@ function DashboardTab({ state, setState, objFilter, setObjFilter }) {
                 <div className="lt-empty-small">Будущих броней нет</div>
               )}
               {upcoming.map((b) => (
-                <div className="lt-tl-item" key={b.id}>
+                <div className="lt-tl-item" key={b.id}onClick={() => openModal(obj.id, b)} style={{ cursor: 'pointer' }}>
                   <div className="lt-tl-dates">
                     {fmt(b.checkIn)} – {fmt(b.checkOut)}
                   </div>
@@ -574,7 +604,16 @@ function DashboardTab({ state, setState, objFilter, setObjFilter }) {
         })}
       </div>
     </div>
+    
   );
+  {isModalOpen && selectedBooking && (
+  <EditBookingModal
+    booking={selectedBooking}
+    objectId={selectedBooking.objectId}
+    onClose={closeModal}
+    onUpdate={updateBookingItems}
+  />
+  )}
 }
 
 // ---------- Warehouse ----------
@@ -1091,7 +1130,60 @@ function AddItemPicker({ onAdd, exclude }) {
     </select>
   );
 }
-
+// ---------- Modal для редактирования комплекта ----------
+function EditBookingModal({ booking, objectId, onClose, onUpdate }) {
+  const [items, setItems] = useState(booking.items || {});
+  const handleChange = (key, value) => {
+    const num = Math.max(0, Number(value) || 0);
+    const newItems = { ...items, [key]: num };
+    setItems(newItems);
+  };
+  const save = () => {
+    onUpdate(objectId, booking.id, items);
+    onClose();
+  };
+  return (
+    <div className="lt-modal-overlay" onClick={onClose}>
+      <div className="lt-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="lt-modal-header">
+          <h3>Редактирование комплекта белья</h3>
+          <button onClick={onClose} className="lt-modal-close">×</button>
+        </div>
+        <div className="lt-modal-body">
+          <p><strong>Бронь:</strong> {booking.guest}</p>
+          <p><strong>Гостей:</strong> {booking.guests}</p>
+          <table className="lt-table">
+            <thead>
+              <tr>
+                <th>Тип</th>
+                <th>Количество</th>
+              </tr>
+            </thead>
+            <tbody>
+              {LINEN_TYPES.map((t) => (
+                <tr key={t.key}>
+                  <td>{t.name}</td>
+                  <td>
+                    <input
+                      type="number"
+                      min="0"
+                      className="mono lt-guest-input"
+                      value={items[t.key] || 0}
+                      onChange={(e) => handleChange(t.key, e.target.value)}
+                    />
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <div className="lt-modal-footer">
+          <button onClick={save} className="lt-btn-primary">Сохранить</button>
+        </div>
+      </div>
+    </div>
+  );
+}
 // ---------- Styles ----------
 const CSS = `
 @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=Work+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap');
@@ -1333,10 +1425,67 @@ const CSS = `
   text-align: right;
 }
 @media (max-width: 720px) {
-  .lt-root { flex-direction: column; }
-  .lt-sidebar { width: 100%; flex-direction: row; align-items: center; padding: 12px; }
-  .lt-nav { flex-direction: row; overflow-x: auto; }
-  .lt-sidebar-foot { display: none; }
-  .lt-main { padding: 18px; }
+  .lt-root {
+    flex-direction: column;
+  }
+  .lt-sidebar {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    width: 100%;
+    flex-direction: row;
+    justify-content: space-around;
+    background: var(--paper);
+    border-top: 1px solid var(--line);
+    padding: 6px 10px;
+    z-index: 100;
+    height: 60px;
+    box-shadow: 0 -2px 8px rgba(0,0,0,0.05);
+  }
+  .lt-brand {
+    display: none;
+  }
+  .lt-nav {
+    flex-direction: row;
+    justify-content: space-around;
+    width: 100%;
+    gap: 0;
+  }
+  .lt-nav-item {
+    flex-direction: column;
+    gap: 2px;
+    padding: 4px 6px;
+    font-size: 10px;
+    font-weight: 500;
+    white-space: nowrap;
+    background: transparent;
+    border: none;
+    color: var(--ink-soft);
+    align-items: center;
+    justify-content: center;
+    flex: 1;
+  }
+  .lt-nav-item svg {
+    width: 20px;
+    height: 20px;
+    margin-bottom: 1px;
+  }
+  .lt-nav-item.active {
+    background: transparent;
+    color: var(--chambray);
+  }
+  .lt-nav-item span {
+    font-size: 9px;
+    line-height: 1.2;
+  }
+  .lt-sidebar-foot {
+    display: none;
+  }
+  .lt-main {
+    padding: 18px 18px 80px 18px;
+    flex: 1;
+    overflow-y: auto;
+  }
 }
 `;
