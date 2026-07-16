@@ -344,7 +344,7 @@ export default function App() {
     };
 
     initData();
-   
+  }, []);
 
   // Функция обновления состояния с сохранением в Firebase
   const updateState = async (newStateOrUpdater) => {
