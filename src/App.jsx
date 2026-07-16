@@ -221,9 +221,12 @@ const DOC_PATH = 'appData/main';
 async function saveStateToFirebase(state) {
   try {
     const docRef = doc(db, 'appData', 'main');
-    await setDoc(docRef, state);
+    // Сериализуем даты в строки (JSON.stringify превращает Date в строки ISO)
+    const serialized = JSON.parse(JSON.stringify(state));
+    await setDoc(docRef, serialized);
+    console.log('✅ Данные успешно сохранены в Firebase');
   } catch (e) {
-    console.error('Ошибка сохранения в Firebase:', e);
+    console.error('❌ Ошибка сохранения в Firebase:', e);
   }
 }
 // ---------- Helper: merge bookings, сохраняя ручные правки ----------
