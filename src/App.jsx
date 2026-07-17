@@ -29,17 +29,21 @@ const CATEGORIES = [
 ];
 
 const LINEN_TYPES = [
+  // Полотенца
   { key: "towel_medium", name: "Средние", cat: "towels" },
   { key: "towel_small", name: "Маленькие", cat: "towels" },
   { key: "towel_large", name: "Большие", cat: "towels" },
   { key: "towel_kitchen", name: "Кухня", cat: "towels" },
-  { key: "towel_feet", name: "Для ног", cat: "towels" },
-  { key: "sheet_fitted", name: "На резинке", cat: "sheets" },
-  { key: "sheet_double", name: "Двухспальная", cat: "sheets" },
-  { key: "sheet_euro", name: "Евро", cat: "sheets" },
+  { key: "towel_feet", name: "Ножки", cat: "towels" },
+  // Наволочки
+  { key: "pillowcase", name: "Наволочка", cat: "pillowcase" },
+  // Пододеяльники
   { key: "duvet_1_5", name: "Полуторный", cat: "duvet" },
   { key: "duvet_double", name: "Двухспальный", cat: "duvet" },
-  { key: "pillowcase", name: "Наволочка", cat: "pillowcase" },
+  // Простыни
+  { key: "sheet_fitted", name: "На резинке", cat: "sheets" },
+  { key: "sheet_double", name: "Двухспальная простынь", cat: "sheets" },
+  { key: "sheet_euro", name: "Евро", cat: "sheets" },
 ];
 
 const typeByKey = Object.fromEntries(LINEN_TYPES.map((t) => [t.key, t]));
@@ -164,6 +168,7 @@ function getLinenSet(objId, guests) {
     towel_small: 1,
     towel_large: 1,
     duvet_1_5: 1,
+    pillowcase: 1,
   };
   const result = { ...baseSet };
   const extraGuests = Math.max(0, guests - baseGuests);
@@ -359,15 +364,32 @@ export default function App() {
       return newState;
     });
   };
-
-  // Автоматическое добавление в стирку
+// Автоматическое добавление в стирку и списание белья с allocated
   useEffect(() => {
     if (!state) return;
     const existingIds = new Set(state.laundry.map((l) => l.bookingId));
-    const newEntries = [];
-    for (const obj of state.objects) {
-      for (const b of obj.bookings) {
+    let newEntries = [];
+    let updatedObjects = [...state.objects]; // копируем объекты для изменений
+  
+    for (let obj of state.objects) {
+      for (let b of obj.bookings) {
         if (b.checkOut <= today && !existingIds.has(b.id)) {
+          // 1. Списываем бельё с allocated на объекте
+          const objIndex = updatedObjects.findIndex(o => o.id === obj.id);
+          if (objIndex !== -1) {
+            const updatedAllocated = { ...updatedObjects[objIndex].allocated };
+            // Проходим по всем позициям белья в этой брони
+            for (const [key, value] of Object.entries(b.items)) {
+              // Уменьшаем allocated на количество, которое было использовано
+              updatedAllocated[key] = Math.max(0, (updatedAllocated[key] || 0) - value);
+            }
+            updatedObjects[objIndex] = {
+              ...updatedObjects[objIndex],
+              allocated: updatedAllocated,
+            };
+          }
+  
+          // 2. Создаём запись в стирку
           newEntries.push({
             id: 'l_' + b.id,
             bookingId: b.id,
@@ -381,8 +403,14 @@ export default function App() {
         }
       }
     }
+  
+    // 3. Если есть новые записи, обновляем состояние: объекты и laundry
     if (newEntries.length) {
-      updateState((s) => ({ ...s, laundry: [...s.laundry, ...newEntries] }));
+      updateState((prevState) => ({
+        ...prevState,
+        objects: updatedObjects,
+        laundry: [...prevState.laundry, ...newEntries],
+      }));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state?.objects?.length, loaded]);
@@ -509,12 +537,24 @@ function DashboardTab({ state, setState, objFilter, setObjFilter }) {
   };
 
   const perObjectNeed = state.objects.map((obj) => {
-    const upcoming = obj.bookings
-      .filter((b) => b.checkIn >= today)
-      .sort((a, b) => a.checkIn - b.checkIn)
-      .slice(0, 2);
-    const need = sumItems(...upcoming.map((b) => b.items || getLinenSet(obj.id, b.guests)));
-    return { obj, upcoming, need };
+  // Все брони, у которых выезд ещё не наступил (будущие и текущие)
+  const activeBookings = obj.bookings
+    .filter((b) => b.checkOut > today)
+    .sort((a, b) => a.checkIn - b.checkIn);
+
+  // Текущая бронь (заезд уже был или сегодня)
+  const current = activeBookings.find(b => b.checkIn <= today);
+  
+  // Будущие брони (заезд строго позже сегодня)
+  const future = activeBookings.filter(b => b.checkIn > today);
+
+  // Собираем список: сначала текущая (если есть), затем две будущие
+  const upcoming = [];
+  if (current) upcoming.push(current);
+  upcoming.push(...future.slice(0, 2));
+
+  const need = sumItems(...upcoming.map((b) => b.items || getLinenSet(obj.id, b.guests)));
+  return { obj, upcoming, need };
   });
 
   const filtered = perObjectNeed.filter(
@@ -579,26 +619,38 @@ function DashboardTab({ state, setState, objFilter, setObjFilter }) {
               {upcoming.length === 0 && (
                 <div className="lt-empty-small">Будущих броней нет</div>
               )}
-              {upcoming.map((b) => (
-                <div
-                  className="lt-tl-item"
-                  key={b.id}
-                  onClick={() => openModal(obj.id, b)}
-                  style={{ cursor: 'pointer' }}
-                >
-                  <div className="lt-tl-dates">
+              {upcoming.map((b) => {
+                const isCurrent = b.checkIn <= today && b.checkOut > today;
+                return (
+                  <div
+                    className="lt-tl-item"
+                    key={b.id}
+                    onClick={() => openModal(obj.id, b)}
+                    style={{
+                      cursor: 'pointer',
+                      backgroundColor: isCurrent ? '#e9f4fc' : 'transparent',
+                      borderRadius: '4px',
+                      padding: '4px 8px',
+                    }}
+                  >
+                    <div className="lt-tl-dates">
                     {fmt(b.checkIn)} – {fmt(b.checkOut)}
+                    {isCurrent && (
+                      <span style={{ marginLeft: '8px', fontSize: '11px', fontWeight: 'bold', color: '#213140' }}>
+                      (текущая)
+                     </span>
+                    )}
                   </div>
                   <div className="lt-tl-meta">
-                    <Users size={12} strokeWidth={2} /> {b.guests} · через{" "}
-                    {daysUntil(b.checkIn)} дн.
+                    <Users size={12} strokeWidth={2} /> {b.guests} · через {daysUntil(b.checkIn)} дн.
                   </div>
                 </div>
-              ))}
-            </div>
-          </div>
+                );
+              })}
+            </div>   
+          </div>     
         ))}
-      </div>
+      </div>      
 
       <div className="lt-tablewrap">
         {filtered.map(({ obj, need }) => {
@@ -700,7 +752,6 @@ function WarehouseTab({ state, setState }) {
       <header className="lt-header">
         <div>
           <h1>Склад чистого белья</h1>
-          <p className="lt-sub">Общий остаток на оба объекта. Меняется вручную или автоматически при возврате из стирки.</p>
         </div>
       </header>
       <div className="lt-tablewrap">
@@ -821,13 +872,51 @@ function BookingsTab({ state, setState, objFilter, setObjFilter }) {
       {filteredObjects.map((obj) => {
         const sorted = [...obj.bookings].sort((a, b) => a.checkIn - b.checkIn);
         const past = sorted.filter((b) => b.checkOut < today);
-        const future = sorted.filter((b) => b.checkIn >= today);
+        const current = sorted.filter((b) => b.checkIn <= today && b.checkOut > today);
+        const future = sorted.filter((b) => b.checkIn > today);
         const visibleFuture = future.slice(0, 4);
         const hiddenFuture = future.slice(4);
 
         return (
           <div className="lt-section" key={obj.id}>
-
+            {/* Текущие брони */}
+            {current.length > 0 && (
+              <table className="lt-table" style={{ marginBottom: '12px' }}>
+                <thead>
+                  <tr>
+                    <th>Гость</th>
+                    <th>Заезд</th>
+                    <th>Выезд</th>
+                    <th>Гостей</th>
+                    <th>Статус</th>
+                    <th>RC №</th>
+                  </tr>
+                </thead>
+              <tbody>
+                {current.map((b) => (
+                  <tr key={b.id} onClick={() => openModal(obj.id, b)} style={{ cursor: 'pointer' }}>
+                    <td>{b.guest}</td>
+                    <td className="mono">{fmt(b.checkIn)}</td>
+                    <td className="mono">{fmt(b.checkOut)}</td>
+                    <td>
+                      <input
+                        type="number"
+                        min="1"
+                        className="mono lt-guest-input"
+                        value={b.guests}
+                        onChange={(e) => updateGuests(obj.id, b.id, e.target.value)}
+                        onClick={(e) => e.stopPropagation()}
+                      />
+                    </td>
+                    <td>
+                     <span className="lt-badge status-идёт">текущая</span>
+                    </td>
+                    <td className="mono lt-dim">{b.rc}</td>
+                  </tr>
+                 ))}
+                </tbody>
+              </table>
+            )}
             {visibleFuture.length > 0 && (
               <table className="lt-table">
                 <thead>
@@ -1070,10 +1159,6 @@ function LaundryTab({ state, setState }) {
       <header className="lt-header">
         <div>
           <h1>В стирке</h1>
-          <p className="lt-sub">
-            Комплекты попадают сюда автоматически после даты выезда. Количество можно
-            скорректировать вручную перед сдачей в стирку.
-          </p>
         </div>
       </header>
 
@@ -1098,25 +1183,30 @@ function LaundryTab({ state, setState }) {
                 </button>
               </div>
               <div className="lt-litems">
-                {Object.entries(entry.items).map(([k, v]) => (
-                  <div className="lt-litem" key={k}>
-                    <span>{typeByKey[k]?.name || k}</span>
-                    <div className="lt-stepper">
-                      <button onClick={() => updateItem(entry.id, k, -1)}>
-                        <Minus size={13} strokeWidth={2.2} />
-                      </button>
-                      <span className="mono">{v}</span>
-                      <button onClick={() => updateItem(entry.id, k, 1)}>
-                        <Plus size={13} strokeWidth={2.2} />
-                      </button>
+                {Object.entries(entry.items).filter(([k, v]) => v > 0)
+                  .sort((a, b) => {
+                    const indexA = LINEN_TYPES.findIndex(t => t.key === a[0]);
+                    const indexB = LINEN_TYPES.findIndex(t => t.key === b[0]);
+                    return indexA - indexB;
+                  }).map(([k, v]) => (
+                    <div className="lt-litem" key={k}>
+                      <span>{typeByKey[k]?.name || k}</span>
+                      <div className="lt-stepper">
+                        <button onClick={() => updateItem(entry.id, k, -1)}>
+                          <Minus size={13} strokeWidth={2.2} />
+                        </button>
+                        <span className="mono">{v}</span>
+                        <button onClick={() => updateItem(entry.id, k, 1)}>
+                          <Plus size={13} strokeWidth={2.2} />
+                        </button>
+                      </div>
                     </div>
-                  </div>
-                ))}
-                <AddItemPicker onAdd={(key) => addItem(entry.id, key)} exclude={entry.items} />
+                  ))}
+                  <AddItemPicker onAdd={(key) => addItem(entry.id, key)} exclude={entry.items} />
+                </div>
               </div>
-            </div>
-          ))}
-      </div>
+            ))}
+        </div>
 
       {history.length > 0 && (
         <div className="lt-history">
