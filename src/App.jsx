@@ -550,24 +550,29 @@ function DashboardTab({ state, setState, objFilter, setObjFilter }) {
   };
 
   const perObjectNeed = state.objects.map((obj) => {
-  // Все брони, у которых выезд ещё не наступил (будущие и текущие)
-  const activeBookings = obj.bookings
-    .filter((b) => b.checkOut > today)
-    .sort((a, b) => a.checkIn - b.checkIn);
+    const activeBookings = obj.bookings
+      .filter((b) => b.checkOut > today)
+      .sort((a, b) => a.checkIn - b.checkIn);
 
-  // Текущая бронь (заезд уже был или сегодня)
-  const current = activeBookings.find(b => b.checkIn <= today);
-  
-  // Будущие брони (заезд строго позже сегодня)
-  const future = activeBookings.filter(b => b.checkIn > today);
+    const current = activeBookings.find(b => b.checkIn <= today);
+    const future = activeBookings.filter(b => b.checkIn > today);
 
-  // Собираем список: сначала текущая (если есть), затем две будущие
-  const upcoming = [];
-  if (current) upcoming.push(current);
-  upcoming.push(...future.slice(0, 2));
+    // Список для отображения (всегда текущая + 2 будущие)
+    const upcoming = [];
+    if (current) upcoming.push(current);
+    upcoming.push(...future.slice(0, 2));
 
-  const need = sumItems(...upcoming.map((b) => b.items || getLinenSet(obj.id, b.guests)));
-  return { obj, upcoming, need };
+    // Расчёт потребности: если есть текущая и она не застелена, считаем все три,
+    // иначе считаем только две будущие
+    let need = {};
+    if (current && !current.linenIssued) {
+      need = sumItems(...upcoming.map((b) => b.items || getLinenSet(obj.id, b.guests)));
+    } else {
+      const futureOnly = future.slice(0, 2);
+      need = sumItems(...futureOnly.map((b) => b.items || getLinenSet(obj.id, b.guests)));
+    }
+
+    return { obj, upcoming, need, current };
   });
 
   const filtered = perObjectNeed.filter(
@@ -621,12 +626,30 @@ function DashboardTab({ state, setState, objFilter, setObjFilter }) {
       </div>
 
       <div className="lt-objcards">
-        {filtered.map(({ obj, upcoming }) => (
+        {filtered.map(({ obj, upcoming, current }) => (
           <div className="lt-card" key={obj.id}>
             <div className="lt-card-head">
               <Building2 size={15} strokeWidth={1.8} />
               <span>Ближайшие брони</span>
-              <span className="lt-tag-id">{obj.rcId}</span>
+              <button
+                className="lt-btn-secondary"
+                disabled={!current || current.linenIssued}
+                onClick={() => {
+                  if (current) handleIssueLinen(obj.id, current.id);
+                }}
+                style={{
+                  background: current && !current.linenIssued ? '#4a90d9' : '#c8d6e5',
+                  color: 'white',
+                  border: 'none',
+                  padding: '4px 12px',
+                  borderRadius: '4px',
+                  cursor: current && !current.linenIssued ? 'pointer' : 'default',
+                  fontSize: '12px',
+                  marginLeft: 'auto',
+                }}
+              >
+                {current && current.linenIssued ? '✅ Белье застелено' : '🛏️ Белье застелено'}
+              </button>
             </div>
             <div className="lt-timeline">
               {upcoming.length === 0 && (
@@ -654,32 +677,10 @@ function DashboardTab({ state, setState, objFilter, setObjFilter }) {
                         )}
                       </div>
                       <div className="lt-tl-meta" onClick={() => openModal(obj.id, b)} style={{ cursor: 'pointer' }}>
-                        <Users size={12} strokeWidth={2} /> {b.guests} · через {daysUntil(b.checkIn)} дн.
+                        <Users size={12} strokeWidth={2} /> {b.guests}
+                        {!isCurrent && ` · через ${daysUntil(b.checkIn)} дн.`}
                       </div>
                     </div>
-                    {isCurrent && (
-                      <div style={{ marginTop: '6px', textAlign: 'right' }}>
-                        <button
-                          className="lt-btn-secondary"
-                          disabled={b.linenIssued}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleIssueLinen(obj.id, b.id);
-                          }}
-                          style={{
-                            background: b.linenIssued ? '#c8d6e5' : '#4a90d9',
-                            color: 'white',
-                            border: 'none',
-                            padding: '4px 12px',
-                            borderRadius: '4px',
-                            cursor: b.linenIssued ? 'default' : 'pointer',
-                            fontSize: '12px',
-                          }}
-                        >
-                          {b.linenIssued ? '✅ Белье застелено' : '🛏️ Белье застелено'}
-                        </button>
-                      </div>
-                    )}
                   </div>
                 );
               })}
