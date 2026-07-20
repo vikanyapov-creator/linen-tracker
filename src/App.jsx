@@ -209,6 +209,7 @@ async function loadBookingsFromICal(icalUrl, objId, defaultGuests = 1) {
           checkOut: new Date(event.end),
           rc: `RC-${id}`,
           items: getLinenSet(objId, defaultGuests),
+          linenIssued: false,
         });
       }
     }
@@ -368,28 +369,11 @@ export default function App() {
   useEffect(() => {
     if (!state) return;
     const existingIds = new Set(state.laundry.map((l) => l.bookingId));
-    let newEntries = [];
-    let updatedObjects = [...state.objects]; // копируем объекты для изменений
+    const newEntries = [];
   
-    for (let obj of state.objects) {
-      for (let b of obj.bookings) {
+    for (const obj of state.objects) {
+      for (const b of obj.bookings) {
         if (b.checkOut <= today && !existingIds.has(b.id)) {
-          // 1. Списываем бельё с allocated на объекте
-          const objIndex = updatedObjects.findIndex(o => o.id === obj.id);
-          if (objIndex !== -1) {
-            const updatedAllocated = { ...updatedObjects[objIndex].allocated };
-            // Проходим по всем позициям белья в этой брони
-            for (const [key, value] of Object.entries(b.items)) {
-              // Уменьшаем allocated на количество, которое было использовано
-              updatedAllocated[key] = Math.max(0, (updatedAllocated[key] || 0) - value);
-            }
-            updatedObjects[objIndex] = {
-              ...updatedObjects[objIndex],
-              allocated: updatedAllocated,
-            };
-          }
-  
-          // 2. Создаём запись в стирку
           newEntries.push({
             id: 'l_' + b.id,
             bookingId: b.id,
@@ -404,15 +388,12 @@ export default function App() {
       }
     }
   
-    // 3. Если есть новые записи, обновляем состояние: объекты и laundry
     if (newEntries.length) {
       updateState((prevState) => ({
         ...prevState,
-        objects: updatedObjects,
         laundry: [...prevState.laundry, ...newEntries],
       }));
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state?.objects?.length, loaded]);
 
   if (!state) {
@@ -536,6 +517,38 @@ function DashboardTab({ state, setState, objFilter, setObjFilter }) {
     });
   };
 
+  const handleIssueLinen = (objId, bookingId) => {
+    setState((prev) => {
+      const obj = prev.objects.find(o => o.id === objId);
+      if (!obj) return prev;
+      const booking = obj.bookings.find(b => b.id === bookingId);
+      if (!booking || booking.linenIssued) return prev;
+
+      const updatedAllocated = { ...obj.allocated };
+      for (const [key, value] of Object.entries(booking.items)) {
+        updatedAllocated[key] = Math.max(0, (updatedAllocated[key] || 0) - value);
+      }
+
+      const updatedObjects = prev.objects.map(o => {
+        if (o.id === objId) {
+          return {
+            ...o,
+            allocated: updatedAllocated,
+            bookings: o.bookings.map(b => {
+              if (b.id === bookingId) {
+                return { ...b, linenIssued: true };
+              }
+              return b;
+            })
+          };
+        }
+        return o;
+      });
+
+      return { ...prev, objects: updatedObjects };
+    });
+  };
+
   const perObjectNeed = state.objects.map((obj) => {
   // Все брони, у которых выезд ещё не наступил (будущие и текущие)
   const activeBookings = obj.bookings
@@ -625,26 +638,49 @@ function DashboardTab({ state, setState, objFilter, setObjFilter }) {
                   <div
                     className="lt-tl-item"
                     key={b.id}
-                    onClick={() => openModal(obj.id, b)}
                     style={{
-                      cursor: 'pointer',
                       backgroundColor: isCurrent ? '#e9f4fc' : 'transparent',
                       borderRadius: '4px',
                       padding: '4px 8px',
                     }}
                   >
-                    <div className="lt-tl-dates">
-                    {fmt(b.checkIn)} – {fmt(b.checkOut)}
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
+                      <div className="lt-tl-dates" onClick={() => openModal(obj.id, b)} style={{ cursor: 'pointer', flex: 1 }}>
+                        {fmt(b.checkIn)} – {fmt(b.checkOut)}
+                        {isCurrent && (
+                          <span style={{ marginLeft: '8px', fontSize: '11px', fontWeight: 'bold', color: '#213140' }}>
+                            (текущая)
+                          </span>
+                        )}
+                      </div>
+                      <div className="lt-tl-meta" onClick={() => openModal(obj.id, b)} style={{ cursor: 'pointer' }}>
+                        <Users size={12} strokeWidth={2} /> {b.guests} · через {daysUntil(b.checkIn)} дн.
+                      </div>
+                    </div>
                     {isCurrent && (
-                      <span style={{ marginLeft: '8px', fontSize: '11px', fontWeight: 'bold', color: '#213140' }}>
-                      (текущая)
-                     </span>
+                      <div style={{ marginTop: '6px', textAlign: 'right' }}>
+                        <button
+                          className="lt-btn-secondary"
+                          disabled={b.linenIssued}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleIssueLinen(obj.id, b.id);
+                          }}
+                          style={{
+                            background: b.linenIssued ? '#c8d6e5' : '#4a90d9',
+                            color: 'white',
+                            border: 'none',
+                            padding: '4px 12px',
+                            borderRadius: '4px',
+                            cursor: b.linenIssued ? 'default' : 'pointer',
+                            fontSize: '12px',
+                          }}
+                        >
+                          {b.linenIssued ? '✅ Белье застелено' : '🛏️ Белье застелено'}
+                        </button>
+                      </div>
                     )}
                   </div>
-                  <div className="lt-tl-meta">
-                    <Users size={12} strokeWidth={2} /> {b.guests} · через {daysUntil(b.checkIn)} дн.
-                  </div>
-                </div>
                 );
               })}
             </div>   
@@ -879,45 +915,8 @@ function BookingsTab({ state, setState, objFilter, setObjFilter }) {
 
         return (
           <div className="lt-section" key={obj.id}>
-            {/* Текущие брони */}
-            {current.length > 0 && (
-              <table className="lt-table" style={{ marginBottom: '12px' }}>
-                <thead>
-                  <tr>
-                    <th>Гость</th>
-                    <th>Заезд</th>
-                    <th>Выезд</th>
-                    <th>Гостей</th>
-                    <th>Статус</th>
-                    <th>RC №</th>
-                  </tr>
-                </thead>
-              <tbody>
-                {current.map((b) => (
-                  <tr key={b.id} onClick={() => openModal(obj.id, b)} style={{ cursor: 'pointer' }}>
-                    <td>{b.guest}</td>
-                    <td className="mono">{fmt(b.checkIn)}</td>
-                    <td className="mono">{fmt(b.checkOut)}</td>
-                    <td>
-                      <input
-                        type="number"
-                        min="1"
-                        className="mono lt-guest-input"
-                        value={b.guests}
-                        onChange={(e) => updateGuests(obj.id, b.id, e.target.value)}
-                        onClick={(e) => e.stopPropagation()}
-                      />
-                    </td>
-                    <td>
-                     <span className="lt-badge status-идёт">текущая</span>
-                    </td>
-                    <td className="mono lt-dim">{b.rc}</td>
-                  </tr>
-                 ))}
-                </tbody>
-              </table>
-            )}
-            {visibleFuture.length > 0 && (
+            {/* Объединённая таблица: текущие + первые 4 будущие */}
+            {(current.length > 0 || visibleFuture.length > 0) && (
               <table className="lt-table">
                 <thead>
                   <tr>
@@ -926,10 +925,29 @@ function BookingsTab({ state, setState, objFilter, setObjFilter }) {
                     <th>Выезд</th>
                     <th>Гостей</th>
                     <th>Статус</th>
-                    <th>RC №</th>
                   </tr>
                 </thead>
                 <tbody>
+                  {current.map((b) => (
+                    <tr key={b.id} onClick={() => openModal(obj.id, b)} style={{ cursor: 'pointer' }}>
+                      <td>{b.guest}</td>
+                      <td className="mono">{fmt(b.checkIn)}</td>
+                      <td className="mono">{fmt(b.checkOut)}</td>
+                      <td>
+                        <input
+                          type="number"
+                          min="1"
+                          className="mono lt-guest-input"
+                          value={b.guests}
+                          onChange={(e) => updateGuests(obj.id, b.id, e.target.value)}
+                          onClick={(e) => e.stopPropagation()}
+                        />
+                      </td>
+                      <td>
+                        <span className="lt-badge status-идёт">текущая</span>
+                      </td>
+                    </tr>
+                  ))}
                   {visibleFuture.map((b) => (
                     <tr key={b.id} onClick={() => openModal(obj.id, b)} style={{ cursor: 'pointer' }}>
                       <td>{b.guest}</td>
@@ -948,13 +966,11 @@ function BookingsTab({ state, setState, objFilter, setObjFilter }) {
                       <td>
                         <span className="lt-badge status-будущая">будущая</span>
                       </td>
-                      <td className="mono lt-dim">{b.rc}</td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             )}
-
             {hiddenFuture.length > 0 && (
               <div style={{ marginTop: '8px', marginBottom: '12px' }}>
                 <button
@@ -973,7 +989,6 @@ function BookingsTab({ state, setState, objFilter, setObjFilter }) {
                         <th>Выезд</th>
                         <th>Гостей</th>
                         <th>Статус</th>
-                        <th>RC №</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -995,7 +1010,6 @@ function BookingsTab({ state, setState, objFilter, setObjFilter }) {
                           <td>
                             <span className="lt-badge status-будущая">будущая</span>
                           </td>
-                          <td className="mono lt-dim">{b.rc}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -1022,7 +1036,6 @@ function BookingsTab({ state, setState, objFilter, setObjFilter }) {
                         <th>Выезд</th>
                         <th>Гостей</th>
                         <th>Статус</th>
-                        <th>RC №</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -1044,7 +1057,6 @@ function BookingsTab({ state, setState, objFilter, setObjFilter }) {
                           <td>
                             <span className="lt-badge status-завершена">завершена</span>
                           </td>
-                          <td className="mono lt-dim">{b.rc}</td>
                         </tr>
                       ))}
                     </tbody>
