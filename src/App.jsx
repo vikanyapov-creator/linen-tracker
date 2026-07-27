@@ -615,15 +615,15 @@ function DashboardTab({ state, setState, objFilter, setObjFilter }) {
 
     let need = {};
     if (current && !current.linenIssued) {
-      need = sumItems(...upcoming.map((b) => b.items || getFullSet(obj.id, b.guests, b.checkIn, b.checkOut)));
+      // Всегда используем getFullSet для актуального расчёта
+      need = sumItems(...upcoming.map((b) => getFullSet(obj.id, b.guests, b.checkIn, b.checkOut)));
     } else {
       const futureOnly = future.slice(0, 2);
-      need = sumItems(...futureOnly.map((b) => b.items || getFullSet(obj.id, b.guests, b.checkIn, b.checkOut)));
+      need = sumItems(...futureOnly.map((b) => getFullSet(obj.id, b.guests, b.checkIn, b.checkOut)));
     }
 
     return { obj, upcoming, need, current };
   });
-
   const filtered = perObjectNeed.filter(
     (p) => objFilter === "all" || p.obj.id === objFilter
   );
@@ -1035,16 +1035,21 @@ function BookingsTab({ state, setState, objFilter, setObjFilter }) {
         <div>
           <h1>Брони</h1>
         </div>
-        <div className="lt-objfilter">
-          {state.objects.map((o) => (
-            <button
-              key={o.id}
-              className={objFilter === o.id ? "active" : ""}
-              onClick={() => setObjFilter(o.id)}
-            >
-              {o.name}
-            </button>
-          ))}
+        <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+          <div className="lt-objfilter">
+            {state.objects.map((o) => (
+              <button
+                key={o.id}
+                className={objFilter === o.id ? "active" : ""}
+                onClick={() => setObjFilter(o.id)}
+              >
+                {o.name}
+              </button>
+            ))}
+          </div>
+          <button className="lt-btn-primary" onClick={exportHistoryToExcel}>
+            📊 Экспорт истории
+          </button>
         </div>
       </header>
 
