@@ -257,6 +257,15 @@ async function loadBookingsFromICal(icalUrl, objId, defaultGuests = 1) {
           rc: `RC-${id}`,
           items: getFullSet(objId, defaultGuests, event.start, event.end),
           linenIssued: false,
+          actualConsumables: {
+            toilet_paper: defaultGuests * Math.max(1, Math.ceil((new Date(event.end) - new Date(event.start)) / DAY)),
+            rags: 1,
+            sponges: 1,
+            detergent_wash: defaultGuests * Math.max(1, Math.ceil((new Date(event.end) - new Date(event.start)) / DAY)),
+            detergent_dishwasher: defaultGuests * Math.max(1, Math.ceil((new Date(event.end) - new Date(event.start)) / DAY)),
+            slippers: defaultGuests,
+            toothbrush_kits: defaultGuests,
+          }
         });
       }
     }
@@ -523,7 +532,7 @@ function DashboardTab({ state, setState, objFilter, setObjFilter }) {
     setIsModalOpen(false);
     setSelectedBooking(null);
   };
-  const updateBookingItems = (objId, bookingId, newItems) => {
+ const updateBooking = (objId, bookingId, updatedBooking) => {
     setState((prev) => ({
       ...prev,
       objects: prev.objects.map((obj) =>
@@ -531,7 +540,7 @@ function DashboardTab({ state, setState, objFilter, setObjFilter }) {
           ? {
               ...obj,
               bookings: obj.bookings.map((b) =>
-                b.id === bookingId ? { ...b, items: newItems } : b
+                b.id === bookingId ? { ...b, ...updatedBooking } : b
               ),
             }
           : obj
@@ -804,7 +813,8 @@ function DashboardTab({ state, setState, objFilter, setObjFilter }) {
           booking={selectedBooking}
           objectId={selectedBooking.objectId}
           onClose={closeModal}
-          onUpdate={updateBookingItems}
+          onUpdate={updateBooking}
+          isPast={selectedBooking.checkOut < today}
         />
       )}
     </div>
@@ -876,7 +886,18 @@ function BookingsTab({ state, setState, objFilter, setObjFilter }) {
 
   const updateGuests = (objId, bookingId, newGuests) => {
     const guests = Math.max(1, parseInt(newGuests) || 1);
-    const newItems = getLinenSet(objId, guests);
+    const booking = state.objects.find(o => o.id === objId)?.bookings.find(b => b.id === bookingId);
+    if (!booking) return;
+    const newItems = getFullSet(objId, guests, booking.checkIn, booking.checkOut);
+    const newActualConsumables = {
+      toilet_paper: guests * Math.max(1, Math.ceil((booking.checkOut - booking.checkIn) / DAY)),
+      rags: 1,
+      sponges: 1,
+      detergent_wash: guests * Math.max(1, Math.ceil((booking.checkOut - booking.checkIn) / DAY)),
+      detergent_dishwasher: guests * Math.max(1, Math.ceil((booking.checkOut - booking.checkIn) / DAY)),
+      slippers: guests,
+      toothbrush_kits: guests,
+    };
     setState((prev) => ({
       ...prev,
       objects: prev.objects.map((obj) =>
@@ -884,12 +905,88 @@ function BookingsTab({ state, setState, objFilter, setObjFilter }) {
           ? {
               ...obj,
               bookings: obj.bookings.map((b) =>
-                b.id === bookingId ? { ...b, guests, items: getFullSet(objId, guests, b.checkIn, b.checkOut) } : b
+                b.id === bookingId
+                  ? { ...b, guests, items: newItems, actualConsumables: newActualConsumables }
+                  : b
               ),
             }
           : obj
       ),
     }));
+  };
+  const updateBooking = (objId, bookingId, updatedBooking) => {
+    setState((prev) => ({
+      ...prev,
+      objects: prev.objects.map((obj) =>
+        obj.id === objId
+          ? {
+              ...obj,
+              bookings: obj.bookings.map((b) =>
+                b.id === bookingId ? { ...b, ...updatedBooking } : b
+              ),
+            }
+          : obj
+      ),
+    }));
+  };
+  // ----- Экспорт истории (завершённые брони, расходники в отдельных колонках) -----
+  const exportHistoryToExcel = () => {
+    // 1. Собираем все завершённые брони (checkOut < today)
+    const pastBookings = [];
+    state.objects.forEach(obj => {
+      obj.bookings.forEach(b => {
+        if (b.checkOut < today) {
+          pastBookings.push({ ...b, objectName: obj.name });
+        }
+      });
+    });
+
+    if (pastBookings.length === 0) {
+      alert('Нет завершённых броней для экспорта');
+      return;
+    }
+
+    // 2. Определяем список типов расходников (из LINEN_TYPES с cat === 'consumables')
+    const consumableTypes = LINEN_TYPES.filter(t => t.cat === 'consumables');
+
+    // 3. Формируем строки для Excel
+    const rows = pastBookings.map(b => {
+      const checkInDate = new Date(b.checkIn).toLocaleDateString('ru-RU');
+      const consumables = b.actualConsumables || {};
+
+      const row = {
+        'Дата заезда': checkInDate,
+        'Объект': b.objectName,
+      };
+
+      // Добавляем каждую позицию расходников в отдельную колонку
+      consumableTypes.forEach(t => {
+        row[t.name] = consumables[t.key] || 0;
+      });
+
+      return row;
+    });
+
+    // 4. Создаём Excel-книгу
+    const ws = XLSX.utils.json_to_sheet(rows);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'История');
+
+    // 5. Устанавливаем ширину колонок
+    const colWidths = [
+      { wch: 15 }, // Дата заезда
+      { wch: 25 }, // Объект
+    ];
+    consumableTypes.forEach(() => colWidths.push({ wch: 12 }));
+    ws['!cols'] = colWidths;
+
+    // 6. Скачиваем файл
+    const wbout = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+    const blob = new Blob([wbout], { type: 'application/octet-stream' });
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = `История_расходников_${new Date().toISOString().slice(0,10)}.xlsx`;
+    link.click();
   };
 
   const toggleExpand = (objId, type) => {
@@ -1119,45 +1216,13 @@ function BookingsTab({ state, setState, objFilter, setObjFilter }) {
       })}
 
       {isModalOpen && selectedBooking && (
-        <div className="lt-modal-overlay" onClick={closeModal}>
-          <div className="lt-modal" onClick={(e) => e.stopPropagation()}>
-            <div className="lt-modal-header">
-              <h3>Редактирование комплекта белья</h3>
-              <button onClick={closeModal} className="lt-modal-close">×</button>
-            </div>
-            <div className="lt-modal-body">
-              <p><strong>Бронь:</strong> {selectedBooking.guest}</p>
-              <p><strong>Гостей:</strong> {selectedBooking.guests}</p>
-              <table className="lt-table">
-                <thead>
-                  <tr>
-                    <th>Тип</th>
-                    <th>Количество</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {LINEN_TYPES.map((t) => (
-                    <tr key={t.key}>
-                      <td>{t.name}</td>
-                      <td>
-                        <input
-                          type="number"
-                          min="0"
-                          className="mono lt-guest-input"
-                          value={selectedBooking.items?.[t.key] || 0}
-                          onChange={(e) => handleItemChange(t.key, e.target.value)}
-                        />
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-            <div className="lt-modal-footer">
-              <button onClick={closeModal} className="lt-btn-primary">Готово</button>
-            </div>
-          </div>
-        </div>
+        <EditBookingModal
+          booking={selectedBooking}
+          objectId={selectedBooking.objectId}
+          onClose={closeModal}
+          onUpdate={updateBooking}
+          isPast={selectedBooking.checkOut < today}
+        />
       )}
     </div>
   );
@@ -1395,27 +1460,48 @@ function AddItemPicker({ onAdd, exclude }) {
 }
 
 // ----- EditBookingModal -----
-function EditBookingModal({ booking, objectId, onClose, onUpdate }) {
+function EditBookingModal({ booking, objectId, onClose, onUpdate, isPast }) {
+  // Состояние для белья
   const [items, setItems] = useState(booking.items || {});
+  // Состояние для фактических расходников (для истории)
+  const [actualConsumables, setActualConsumables] = useState(booking.actualConsumables || {});
+
+  // Изменение количества белья
   const handleChange = (key, value) => {
     const num = Math.max(0, Number(value) || 0);
-    const newItems = { ...items, [key]: num };
-    setItems(newItems);
+    setItems({ ...items, [key]: num });
   };
+
+  // Изменение количества расходников
+  const handleConsumableChange = (key, value) => {
+    const num = Math.max(0, Number(value) || 0);
+    setActualConsumables({ ...actualConsumables, [key]: num });
+  };
+
+  // Сохранение: передаём весь обновлённый объект брони
   const save = () => {
-    onUpdate(objectId, booking.id, items);
+    const updatedBooking = {
+      ...booking,
+      items: items,
+      actualConsumables: actualConsumables,
+    };
+    onUpdate(objectId, booking.id, updatedBooking);
     onClose();
   };
+
   return (
     <div className="lt-modal-overlay" onClick={onClose}>
       <div className="lt-modal" onClick={(e) => e.stopPropagation()}>
         <div className="lt-modal-header">
-          <h3>Редактирование комплекта белья</h3>
+          <h3>{isPast ? 'Просмотр завершённой брони' : 'Редактирование комплекта белья'}</h3>
           <button onClick={onClose} className="lt-modal-close">×</button>
         </div>
         <div className="lt-modal-body">
           <p><strong>Бронь:</strong> {booking.guest}</p>
           <p><strong>Гостей:</strong> {booking.guests}</p>
+
+          {/* Таблица белья */}
+          <h4>Бельё</h4>
           <table className="lt-table">
             <thead>
               <tr>
@@ -1424,7 +1510,7 @@ function EditBookingModal({ booking, objectId, onClose, onUpdate }) {
               </tr>
             </thead>
             <tbody>
-              {LINEN_TYPES.map((t) => (
+              {LINEN_TYPES.filter(t => t.cat !== 'consumables').map((t) => (
                 <tr key={t.key}>
                   <td>{t.name}</td>
                   <td>
@@ -1434,21 +1520,55 @@ function EditBookingModal({ booking, objectId, onClose, onUpdate }) {
                       className="mono lt-guest-input"
                       value={items[t.key] || 0}
                       onChange={(e) => handleChange(t.key, e.target.value)}
+                      readOnly={isPast}
+                      style={{ background: isPast ? '#f0f0f0' : 'white', cursor: isPast ? 'default' : 'text' }}
                     />
                   </td>
                 </tr>
               ))}
             </tbody>
           </table>
+
+          {/* Таблица расходников (только для завершённых) */}
+          {isPast && (
+            <>
+              <h4 style={{ marginTop: '16px' }}>Фактические расходники (можно отредактировать)</h4>
+              <table className="lt-table">
+                <thead>
+                  <tr>
+                    <th>Тип</th>
+                    <th>Количество</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {LINEN_TYPES.filter(t => t.cat === 'consumables').map((t) => (
+                    <tr key={t.key}>
+                      <td>{t.name}</td>
+                      <td>
+                        <input
+                          type="number"
+                          min="0"
+                          className="mono lt-guest-input"
+                          value={actualConsumables[t.key] || 0}
+                          onChange={(e) => handleConsumableChange(t.key, e.target.value)}
+                        />
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </>
+          )}
         </div>
         <div className="lt-modal-footer">
-          <button onClick={save} className="lt-btn-primary">Сохранить</button>
+          <button onClick={save} className="lt-btn-primary">
+            {isPast ? 'Сохранить фактические расходники' : 'Сохранить'}
+          </button>
         </div>
       </div>
     </div>
   );
 }
-
 // ---------- CSS ----------
 const CSS = `
 @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=Work+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap');
@@ -1766,4 +1886,3 @@ const CSS = `
 `;
 
 // Экспорт по умолчанию уже есть в App
-
