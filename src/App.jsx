@@ -19,6 +19,8 @@ import {
 import ical from 'ical';
 import { doc, getDoc, setDoc, onSnapshot } from 'firebase/firestore';
 import { db } from './firebase';
+import * as XLSX from 'xlsx';
+import { saveAs } from 'file-saver';
 
 // ---------- Catalog ----------
 const CATEGORIES = [
@@ -26,6 +28,7 @@ const CATEGORIES = [
   { key: "sheets", label: "Простыни" },
   { key: "duvet", label: "Пододеяльники" },
   { key: "pillowcase", label: "Наволочки" },
+  { key: "consumables", label: "Расходники" },
 ];
 
 const LINEN_TYPES = [
@@ -44,6 +47,14 @@ const LINEN_TYPES = [
   { key: "sheet_fitted", name: "На резинке", cat: "sheets" },
   { key: "sheet_double", name: "Двухспальная простынь", cat: "sheets" },
   { key: "sheet_euro", name: "Евро", cat: "sheets" },
+   // ---------- Расходники ----------
+  { key: "toilet_paper", name: "Туалетная бумага", cat: "consumables" },
+  { key: "rags", name: "Тряпки", cat: "consumables" },
+  { key: "sponges", name: "Губки", cat: "consumables" },
+  { key: "detergent_wash", name: "Для стирки", cat: "consumables" },
+  { key: "detergent_dishwasher", name: "Для посудомойки", cat: "consumables" },
+  { key: "slippers", name: "Тапочки", cat: "consumables" },
+  { key: "toothbrush_kits", name: "Зубные наборы", cat: "consumables" },
 ];
 
 const typeByKey = Object.fromEntries(LINEN_TYPES.map((t) => [t.key, t]));
@@ -81,6 +92,13 @@ function makeDefaultState() {
         duvet_1_5: 1,
         duvet_double: 1,
         pillowcase: 3,
+        toilet_paper: 0,
+        rags: 0,
+        sponges: 0,
+        detergent_wash: 0,
+        detergent_dishwasher: 0,
+        slippers: 0,
+        toothbrush_kits: 0,
       },
       bookings: [],
     },
@@ -100,6 +118,13 @@ function makeDefaultState() {
         duvet_1_5: 1,
         duvet_double: 1,
         pillowcase: 3,
+        toilet_paper: 0,
+        rags: 0,
+        sponges: 0,
+        detergent_wash: 0,
+        detergent_dishwasher: 0,
+        slippers: 0,
+        toothbrush_kits: 0,
       },
       bookings: [],
     },
@@ -117,6 +142,13 @@ function makeDefaultState() {
     duvet_1_5: 2,
     duvet_double: 3,
     pillowcase: 10,
+    toilet_paper: 0,
+    rags: 0,
+    sponges: 0,
+    detergent_wash: 0,
+    detergent_dishwasher: 0,
+    slippers: 0,
+    toothbrush_kits: 0,
   };
 
   return { objects, stock, laundry: [] };
@@ -180,6 +212,21 @@ function getLinenSet(objId, guests) {
   }
   return result;
 }
+// ---------- Расчет полного набора (бельё + расходники) ----------
+function getFullSet(objId, guests, checkIn, checkOut) {
+  const linen = getLinenSet(objId, guests);
+  const days = Math.max(1, Math.ceil((new Date(checkOut) - new Date(checkIn)) / DAY));
+  const consumables = {
+    toilet_paper: days,
+    rags: 1,
+    sponges: 1,
+    detergent_wash: days,
+    detergent_dishwasher: days,
+    slippers: guests,
+    toothbrush_kits: guests,
+  };
+  return { ...linen, ...consumables };
+}
 
 // ---------- iCalendar loading ----------
 async function loadBookingsFromICal(icalUrl, objId, defaultGuests = 1) {
@@ -208,7 +255,7 @@ async function loadBookingsFromICal(icalUrl, objId, defaultGuests = 1) {
           checkIn: new Date(event.start),
           checkOut: new Date(event.end),
           rc: `RC-${id}`,
-          items: getLinenSet(objId, defaultGuests),
+          items: getFullSet(objId, defaultGuests, event.start, event.end),
           linenIssued: false,
         });
       }
@@ -459,10 +506,6 @@ function Sidebar({ tab, setTab }) {
           </button>
         ))}
       </div>
-      <div className="lt-sidebar-foot">
-        <Link2 size={13} strokeWidth={1.8} />
-        <span>Данные из RealtyCalendar (iCal) с ручным вводом гостей.</span>
-      </div>
     </nav>
   );
 }
@@ -557,19 +600,16 @@ function DashboardTab({ state, setState, objFilter, setObjFilter }) {
     const current = activeBookings.find(b => b.checkIn <= today);
     const future = activeBookings.filter(b => b.checkIn > today);
 
-    // Список для отображения (всегда текущая + 2 будущие)
     const upcoming = [];
     if (current) upcoming.push(current);
     upcoming.push(...future.slice(0, 2));
 
-    // Расчёт потребности: если есть текущая и она не застелена, считаем все три,
-    // иначе считаем только две будущие
     let need = {};
     if (current && !current.linenIssued) {
-      need = sumItems(...upcoming.map((b) => b.items || getLinenSet(obj.id, b.guests)));
+      need = sumItems(...upcoming.map((b) => b.items || getFullSet(obj.id, b.guests, b.checkIn, b.checkOut)));
     } else {
       const futureOnly = future.slice(0, 2);
-      need = sumItems(...futureOnly.map((b) => b.items || getLinenSet(obj.id, b.guests)));
+      need = sumItems(...futureOnly.map((b) => b.items || getFullSet(obj.id, b.guests, b.checkIn, b.checkOut)));
     }
 
     return { obj, upcoming, need, current };
@@ -691,13 +731,7 @@ function DashboardTab({ state, setState, objFilter, setObjFilter }) {
 
       <div className="lt-tablewrap">
         {filtered.map(({ obj, need }) => {
-          const categoriesWithData = CATEGORIES.filter((cat) => {
-            const types = LINEN_TYPES.filter((t) => t.cat === cat.key);
-            return types.some(
-              (t) => (need[t.key] || 0) > 0 || (obj.allocated?.[t.key] || 0) > 0
-            );
-          });
-          if (categoriesWithData.length === 0) return null;
+          const categoriesWithData = CATEGORIES;
 
           return (
             <div key={obj.id} className="lt-section">
@@ -721,7 +755,6 @@ function DashboardTab({ state, setState, objFilter, setObjFilter }) {
                         {types.map((t) => {
                           const needVal = need[t.key] || 0;
                           const allocated = obj.allocated?.[t.key] || 0;
-                          if (needVal === 0 && allocated === 0) return null;
                           const short = Math.max(0, needVal - allocated);
                           return (
                             <tr key={t.key}>
@@ -780,16 +813,22 @@ function DashboardTab({ state, setState, objFilter, setObjFilter }) {
 
 // ----- WarehouseTab -----
 function WarehouseTab({ state, setState }) {
+  const [isEditing, setIsEditing] = useState(false);
+
   const setQty = (key, val) => {
     const v = Math.max(0, Math.round(val));
     setState((s) => ({ ...s, stock: { ...s.stock, [key]: v } }));
   };
+
   return (
     <div>
       <header className="lt-header">
         <div>
           <h1>Склад чистого белья</h1>
         </div>
+        <button className="lt-btn-primary" onClick={() => setIsEditing(!isEditing)}>
+          {isEditing ? 'Сохранить' : 'Редактировать'}
+        </button>
       </header>
       <div className="lt-tablewrap">
         {CATEGORIES.map((cat) => (
@@ -800,18 +839,24 @@ function WarehouseTab({ state, setState }) {
                 <div className="lt-stockrow" key={t.key}>
                   <span className="lt-stockname">{t.name}</span>
                   <div className="lt-stepper">
-                    <button onClick={() => setQty(t.key, (state.stock[t.key] || 0) - 1)}>
-                      <Minus size={13} strokeWidth={2.2} />
-                    </button>
                     <input
                       type="number"
                       className="mono"
                       value={state.stock[t.key] || 0}
                       onChange={(e) => setQty(t.key, Number(e.target.value) || 0)}
+                      readOnly={!isEditing}
+                      style={{ background: isEditing ? 'white' : 'transparent', cursor: isEditing ? 'text' : 'default' }}
                     />
-                    <button onClick={() => setQty(t.key, (state.stock[t.key] || 0) + 1)}>
-                      <Plus size={13} strokeWidth={2.2} />
-                    </button>
+                    {isEditing && (
+                      <>
+                        <button onClick={() => setQty(t.key, (state.stock[t.key] || 0) - 1)}>
+                          <Minus size={13} strokeWidth={2.2} />
+                        </button>
+                        <button onClick={() => setQty(t.key, (state.stock[t.key] || 0) + 1)}>
+                          <Plus size={13} strokeWidth={2.2} />
+                        </button>
+                      </>
+                    )}
                   </div>
                 </div>
               ))}
@@ -839,7 +884,7 @@ function BookingsTab({ state, setState, objFilter, setObjFilter }) {
           ? {
               ...obj,
               bookings: obj.bookings.map((b) =>
-                b.id === bookingId ? { ...b, guests, items: newItems } : b
+                b.id === bookingId ? { ...b, guests, items: getFullSet(objId, guests, b.checkIn, b.checkOut) } : b
               ),
             }
           : obj
@@ -1166,6 +1211,59 @@ function LaundryTab({ state, setState }) {
       };
     });
   };
+    // ----- Экспорт в Excel (точная копия вашей таблицы) -----
+  const exportLaundryToExcel = () => {
+    // 1. Берём только активные записи (в стирке)
+    const activeLaundry = state.laundry.filter(l => l.status === 'in_laundry');
+    if (activeLaundry.length === 0) {
+      alert('Нет активных записей в стирке');
+      return;
+    }
+
+    // 2. Суммируем все позиции по типам
+    const totals = {};
+    activeLaundry.forEach(entry => {
+      for (const [key, count] of Object.entries(entry.items)) {
+        totals[key] = (totals[key] || 0) + count;
+      }
+    });
+
+    // 3. Формируем массив данных в точном соответствии с вашим примером
+    const tableData = [
+      ['Число', '', '', new Date().toLocaleDateString('ru-RU')],
+      ['от Светлана 3', '', 'Кол-во', ''],
+      ['Наволочки', '', '', ''],
+      ['Простыни', 'евро', totals['sheet_euro'] || 0, ''],
+      ['', 'двухспальные', totals['sheet_double'] || 0, ''],
+      ['', 'резинки', totals['sheet_fitted'] || 0, ''],
+      ['Пододеяльники', 'полуторный', totals['duvet_1_5'] || 0, ''],
+      ['', 'двухспальный', totals['duvet_double'] || 0, ''],
+      ['Полотенца', 'большие', totals['towel_large'] || 0, ''],
+      ['', 'средние', totals['towel_medium'] || 0, ''],
+      ['', 'маленькие', totals['towel_small'] || 0, ''],
+      ['', 'кухня', totals['towel_kitchen'] || 0, ''],
+      ['', 'ножки', totals['towel_feet'] || 0, ''],
+    ];
+
+    // 4. Создаём Excel-книгу
+    const wb = XLSX.utils.book_new();
+    const ws = XLSX.utils.aoa_to_sheet(tableData);
+    ws['!cols'] = [
+      { wch: 18 },
+      { wch: 18 },
+      { wch: 10 },
+      { wch: 10 },
+    ];
+    XLSX.utils.book_append_sheet(wb, ws, 'Стирка');
+
+    // 5. Скачиваем файл
+    const wbout = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+    const blob = new Blob([wbout], { type: 'application/octet-stream' });
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = `Стирка_${new Date().toISOString().slice(0,10)}.xlsx`;
+    link.click();
+  };
 
   return (
     <div>
@@ -1173,6 +1271,9 @@ function LaundryTab({ state, setState }) {
         <div>
           <h1>В стирке</h1>
         </div>
+        <button className="lt-btn-primary" onClick={exportLaundryToExcel}>
+          📊 Накладная
+        </button>
       </header>
 
       {active.length === 0 && (
@@ -1665,3 +1766,4 @@ const CSS = `
 `;
 
 // Экспорт по умолчанию уже есть в App
+
